@@ -40,7 +40,7 @@ from collections import deque
 class Grid:
     #Lower ghost negative reward
     # Ghost check negative reward should only happen in the same direction it is moving
-    def __init__(self, width, height, walls, food, capsules, ghosts):
+    def __init__(self, width, height, walls, food, capsules, ghostsWithLastDirection):
         self.width = width
         self.height = height
         self.utility_grid = [[0 for _ in range(width)] for _ in range(height)]
@@ -66,19 +66,35 @@ class Grid:
                 elif (x, y) in walls:
                     self.updateUtility((x, y), '#')      
                     self.updateReward((x, y), '#') 
-                elif (x, y) in ghosts:
-                    self.reward_grid[self.height - y - 1][x] = self.ghostReward
+                # elif (x, y) in ghosts:
+                #     self.reward_grid[self.height - y - 1][x] = self.ghostReward
         
         for f in food:
             self.updatePelletsReward(f)
+        print self.reward_grid
 
-        if ghosts:
-            self.getFurthestDistance(ghosts[0])
+        firstStep = False
+        for ghost in ghostsWithLastDirection:
+            if ghost['dir'] == Directions.STOP:
+                firstStep = True
+                break
+        
+        if firstStep:
+            if ghostsWithLastDirection:
+                for ghost in ghostsWithLastDirection:
+                    self.firstGetFurthestDistance(ghost['pos'])
 
-        for ghost in ghosts:
-            self.updateNeighboursRewards(ghost)
+                for ghost in ghostsWithLastDirection:
+                    self.firstUpdateNeighboursRewards(ghost['pos'])
+        else:
+            if ghostsWithLastDirection:
+                self.getFurthestDistance(ghostsWithLastDirection[0])
 
+            for ghost in ghostsWithLastDirection:
+                self.updateNeighboursRewards(ghost)
 
+        print self.reward_grid
+        time.sleep(5)
 
 
     def updatePelletsReward(self, food):
@@ -100,6 +116,69 @@ class Grid:
     def getFurthestDistance(self, ghost):
         visited = set()
         furthestDistance = 0
+        x, y = ghost['pos']
+        x, y = int(x), int(y)
+        initialqueue = deque([((x, y), ghost['dir'], 0)])
+
+        dirToCheck = {
+            Directions.NORTH: [Directions.NORTH, Directions.EAST, Directions.WEST],
+            Directions.SOUTH: [Directions.SOUTH, Directions.EAST, Directions.WEST],
+            Directions.EAST: [Directions.EAST, Directions.NORTH, Directions.SOUTH],
+            Directions.WEST: [Directions.WEST, Directions.NORTH, Directions.SOUTH]
+        }
+
+        while initialqueue:
+            pos, dir, distance = initialqueue.popleft()
+            x, y = pos
+            if (pos, dir) in visited or pos in self.walls or x < 0 or x >= self.width or y < 0 or y >= self.height:
+                continue
+            visited.add((pos, dir))
+
+            furthestDistance = max(furthestDistance, distance)
+            for d in dirToCheck[dir]:
+                next_pos = self.get_next_position(pos, d)
+                if next_pos != pos:
+                    initialqueue.append((next_pos, d, distance + 1))
+                    
+        self.furthestDistance = furthestDistance
+
+    def updateNeighboursRewards(self, ghost):
+        x, y = ghost['pos']
+        x, y = int(x), int(y)
+
+        direction = ghost['dir']
+        visited = set()
+        queue = deque([((x, y), direction, 0)])
+
+        dirToCheck = {
+            Directions.NORTH: [Directions.NORTH, Directions.EAST, Directions.WEST],
+            Directions.SOUTH: [Directions.SOUTH, Directions.EAST, Directions.WEST],
+            Directions.EAST: [Directions.EAST, Directions.NORTH, Directions.SOUTH],
+            Directions.WEST: [Directions.WEST, Directions.NORTH, Directions.SOUTH]
+        }
+
+        while queue:
+            pos, dir, distance = queue.popleft()
+            x, y = pos
+            if (pos, dir) in visited or pos in self.walls or x < 0 or x >= self.width or y < 0 or y >= self.height:
+                continue
+            visited.add((pos, dir))
+
+            if distance > self.ghostAura:
+                fraction = (1 - (float(distance) / self.furthestDistance)) * self.rateIfNotCloser
+            else:
+                fraction = (1 - (float(distance) / (self.ghostAura + 1)))
+
+            self.updateReward(pos, int(self.getReward(pos) + (fraction * self.ghostReward)))
+
+            for d in dirToCheck[dir]:
+                next_pos = self.get_next_position(pos, d)
+                if next_pos != pos and (next_pos, d) not in visited and next_pos not in self.walls:
+                    queue.append((next_pos, d, distance + 1))
+    
+    def firstGetFurthestDistance(self, ghost):
+        visited = set()
+        furthestDistance = 0
         initialqueue = deque([(ghost, 0)])
         while initialqueue:
             pos, distance = initialqueue.popleft()
@@ -112,30 +191,26 @@ class Grid:
             initialqueue.append(((x + 1, y), distance + 1))
             initialqueue.append(((x, y - 1), distance + 1))
             initialqueue.append(((x, y + 1), distance + 1))
-
         self.furthestDistance = furthestDistance
 
-    def updateNeighboursRewards(self, ghost):
+    def firstUpdateNeighboursRewards(self, ghost):
         x, y = ghost
         x, y = int(x), int(y)
         ghost = (x, y)
         visited = set()
         queue = deque([(ghost, 0)])
-
         while queue:
             pos, distance = queue.popleft()
             x, y = pos
             if pos in visited or pos in self.walls or x < 0 or x > self.width or y < 0 or y > self.height:
                 continue
             visited.add(pos)
-
             if distance > self.ghostAura:
                 fraction = (1 -  (float(distance) / self.furthestDistance)) * self.rateIfNotCloser
             else:
                 fraction = (1 -  (float(distance) / (self.ghostAura + 1)))
-
        
-            self.updateReward(pos, self.getReward(pos) + (fraction * self.ghostReward))
+            self.updateReward(pos, int(self.getReward(pos) + (fraction * self.ghostReward)))
             queue.append(((x - 1, y), distance + 1))
             queue.append(((x + 1, y), distance + 1))
             queue.append(((x, y - 1), distance + 1))
@@ -157,6 +232,19 @@ class Grid:
         x, y = pos
         self.utility_grid[self.height - int(y) - 1][int(x)] = value
 
+    def get_next_position(self, current_pos, direction):
+        x, y = current_pos
+        if direction == Directions.NORTH:
+            return (x, y + 1)
+        elif direction == Directions.SOUTH:
+            return (x, y - 1)
+        elif direction == Directions.EAST:
+            return (x + 1, y)
+        elif direction == Directions.WEST:
+            return (x - 1, y)
+        else:
+            return current_pos
+
 
 import copy
 
@@ -172,6 +260,7 @@ class MDPAgent(Agent):
         self.walls = None
         self.ghosts = None
         self.ghostsWithLastDirection = []
+
     
     def final(self, state):
         self.initialised = False
@@ -270,13 +359,27 @@ class MDPAgent(Agent):
         if pos in self.capsules:
             self.capsules.remove(pos)
 
-        self.ghosts = api.ghosts(state)
+        current_ghosts = api.ghosts(state)
+
+        if not self.ghosts:
+            self.ghostsWithLastDirection = [{'pos': g, 'dir': Directions.STOP} for g in current_ghosts]
+        else:
+            for i, g in enumerate(current_ghosts):
+                if i < len(self.ghostsWithLastDirection):
+                    prev_g = self.ghostsWithLastDirection[i]['pos']
+                    direction = self.compute_direction(prev_g, g)
+                    self.ghostsWithLastDirection[i]['pos'] = g
+                    self.ghostsWithLastDirection[i]['dir'] = direction
+                else:
+                    self.ghostsWithLastDirection.append({'pos': g, 'dir': Directions.STOP})
+
+        self.ghosts = current_ghosts
         # do ghosts shadow here to check direction ghosts are moving in
         # pass this into grid - grid should only assign negative reward in the direction the ghost is moving in (ghost doesnt back on itself)
 
         
 
-        self.grid = Grid(self.width, self.height, self.walls, self.food, self.capsules, self.ghosts)
+        self.grid = Grid(self.width, self.height, self.walls, self.food, self.capsules, self.ghostsWithLastDirection)
 
         self.valueIteration(state, sameDirectionProb, differentDirectionProb)
 
@@ -296,3 +399,17 @@ class MDPAgent(Agent):
             return (x - 1, y)
         else:
             return current_pos
+        
+    def compute_direction(self, prev, current):
+        x1, y1 = prev
+        x2, y2 = current
+        if x2 == x1 and y2 == y1 + 1:
+            return Directions.NORTH
+        elif x2 == x1 and y2 == y1 - 1:
+            return Directions.SOUTH
+        elif x2 == x1 + 1 and y2 == y1:
+            return Directions.EAST
+        elif x2 == x1 - 1 and y2 == y1:
+            return Directions.WEST
+        else:
+            return Directions.STOP
