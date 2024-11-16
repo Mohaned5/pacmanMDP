@@ -37,41 +37,56 @@ import util
 import time
 from collections import deque
 
+
+#TODO /neutralise ghost reward when edible if pacman can not get there in time remaining
+#TODO GAMES TAKE TOO LONG Pacman avoiding ghosts too much?
 class Grid:
     #Lower ghost negative reward
     # Ghost check negative reward should only happen in the same direction it is moving
-    def __init__(self, width, height, walls, food, capsules, ghostsWithLastDirection):
+    def __init__(self, width, height, walls, food, capsules, ghostsWithLastDirection, pacmanPos, ghostStatesWithTimer):
         self.width = width
         self.height = height
         self.utility_grid = [[0 for _ in range(width)] for _ in range(height)]
-        self.reward_grid = [[-5 for _ in range(width)] for _ in range(height)] 
-        self.ghostReward = -100
-        self.foodReward = 50
-        self.finalFoodReward = self.foodReward
-        self.capsuleReward = 50
+        self.reward_grid = [[-20 for _ in range(width)] for _ in range(height)] 
+        self.ghostReward = -250
+        self.foodReward = (-self.ghostReward * 1.5) / float(len(food))
+        self.capsuleReward = 200
         self.walls = walls
         self.furthestDistance = 0
         self.rateIfNotCloser = 0.05
-        self.ghostAura = 4
+        self.ghostAura = 5
+        self.pacmanAura = 6
+        self.pacmanPos = pacmanPos
+        self.ghosts = []
+        self.highestCapsuleReward = 200
+        self.capsules = capsules
+        self.edibleGhosts = []
+
+        for ghost in ghostsWithLastDirection:
+            self.ghosts.append(ghost['pos'])
+
+        for ghost in ghostStatesWithTimer:
+            if ghost[1] > 0.5:
+                self.edibleGhosts.append(ghost[0])
+        
         
         for x in range(width):
             for y in range(height):
                 if (x, y) in food:
-                    if len(food) == 1:
-                        self.updateReward((x, y), self.finalFoodReward)
-                    else:
                         self.updateReward((x, y), self.foodReward)   
-                elif (x, y) in capsules:
-                    self.updateReward((x, y), self.capsuleReward)
                 elif (x, y) in walls:
                     self.updateUtility((x, y), '#')      
                     self.updateReward((x, y), '#') 
+                # elif (x, y) in capsules:
+                #     self.updateReward((x, y), self.capsuleReward)
                 # elif (x, y) in ghosts:
                 #     self.reward_grid[self.height - y - 1][x] = self.ghostReward
         
-        for f in food:
-            self.updatePelletsReward(f)
-        print self.reward_grid
+        for x in range(width):
+            for y in range(height):
+                if (x, y) not in self.walls:
+                    self.updateSquareReward((x, y))
+        
 
         firstStep = False
         for ghost in ghostsWithLastDirection:
@@ -79,26 +94,63 @@ class Grid:
                 firstStep = True
                 break
         
+
         if firstStep:
+            # print ghostsWithLastDirection
+
             if ghostsWithLastDirection:
-                for ghost in ghostsWithLastDirection:
-                    self.firstGetFurthestDistance(ghost['pos'])
+                if ghostsWithLastDirection:
+                    self.firstGetFurthestDistance(ghostsWithLastDirection[0]['pos'])
 
                 for ghost in ghostsWithLastDirection:
                     self.firstUpdateNeighboursRewards(ghost['pos'])
         else:
+
             if ghostsWithLastDirection:
                 self.getFurthestDistance(ghostsWithLastDirection[0])
 
             for ghost in ghostsWithLastDirection:
-                self.updateNeighboursRewards(ghost)
+                # print ghost['pos']
+                # print ""
+                if ghost['pos'] in self.edibleGhosts:
+                    self.updateNeighboursRewards(ghost, -1)
+                else:
+                    self.updateNeighboursRewards(ghost, 1)
 
-        print self.reward_grid
-        time.sleep(5)
+        for x in range(width):
+            for y in range(height):
+                reward = self.getReward((x, y))
+                if reward != '#':
+                    self.updateReward((x, y), int(self.getReward((x, y))))
+    
+
+        self.updateCapsuleRewards()
+
+        
+
+    def updateCapsuleRewards(self):
+        queue = deque([(self.pacmanPos, 0)])
+        visited = set()
+        capsuleReward = 0
+        while queue:
+            pos, distance = queue.popleft()
+            x, y = pos
+            if pos in visited or pos in self.walls or x < 0 or x >= self.width or y < 0 or y >= self.height or distance > self.pacmanAura:
+                continue
+            visited.add(pos)
+            if pos in self.ghosts:
+                capsuleReward = (1 - (float(distance) / self.pacmanAura)) * self.highestCapsuleReward
+            queue.append(((x - 1, y), distance + 1))
+            queue.append(((x + 1, y), distance + 1))
+            queue.append(((x, y - 1), distance + 1))
+            queue.append(((x, y + 1), distance + 1))
+        
+        for capsule in self.capsules:
+            self.updateReward(capsule, self.getReward(capsule) + capsuleReward)
 
 
-    def updatePelletsReward(self, food):
-        x, y = food
+    def updateSquareReward(self, coord):
+        x, y = coord
         numOfWalls = 0
         if (x - 1, y) in self.walls:
             numOfWalls += 1
@@ -109,13 +161,29 @@ class Grid:
         if (x, y + 1) in self.walls:
             numOfWalls += 1
         
-        self.updateReward((x, y), self.getReward((x, y)) * (1 - (numOfWalls / float(4))) )
+        reward = self.getReward(coord)
+        if numOfWalls == 3:
+            if reward > 0:
+                self.updateReward(coord, reward * 0.2)
+            else:
+                self.updateReward(coord, reward * 5)
+        elif numOfWalls == 2:
+            if reward > 0:
+                self.updateReward(coord, reward * 0.6)
+            else:
+                self.updateReward(coord, reward * (5.0/3))
+        elif numOfWalls == 1:
+            if reward > 0:
+                self.updateReward(coord, reward * 0.8)
+            else:
+                self.updateReward(coord, reward * (5.0/4))
+    
             
 
 
     def getFurthestDistance(self, ghost):
         visited = set()
-        furthestDistance = 0
+        furthestDistance = 10
         x, y = ghost['pos']
         x, y = int(x), int(y)
         initialqueue = deque([((x, y), ghost['dir'], 0)])
@@ -142,7 +210,7 @@ class Grid:
                     
         self.furthestDistance = furthestDistance
 
-    def updateNeighboursRewards(self, ghost):
+    def updateNeighboursRewards(self, ghost, multiplier):
         x, y = ghost['pos']
         x, y = int(x), int(y)
 
@@ -157,6 +225,17 @@ class Grid:
             Directions.WEST: [Directions.WEST, Directions.NORTH, Directions.SOUTH]
         }
 
+        opposite = {
+            Directions.NORTH: Directions.SOUTH,
+            Directions.SOUTH: Directions.NORTH,
+            Directions.EAST: Directions.WEST,
+            Directions.WEST: Directions.EAST
+        }
+
+        bx, by = self.get_next_position((x, y), opposite[direction])
+        if (bx, by) not in self.walls:
+            self.updateReward((bx, by), (self.getReward((bx, by)) + (2 * self.ghostReward * multiplier)))
+
         while queue:
             pos, dir, distance = queue.popleft()
             x, y = pos
@@ -167,9 +246,12 @@ class Grid:
             if distance > self.ghostAura:
                 fraction = (1 - (float(distance) / self.furthestDistance)) * self.rateIfNotCloser
             else:
-                fraction = (1 - (float(distance) / (self.ghostAura + 1)))
+                if distance <= 1:
+                    fraction = 2
+                else:
+                    fraction = (1 - (float(distance) / (self.ghostAura + 1)))
 
-            self.updateReward(pos, int(self.getReward(pos) + (fraction * self.ghostReward)))
+            self.updateReward(pos, (self.getReward(pos) + (fraction * self.ghostReward * multiplier)))
 
             for d in dirToCheck[dir]:
                 next_pos = self.get_next_position(pos, d)
@@ -210,7 +292,7 @@ class Grid:
             else:
                 fraction = (1 -  (float(distance) / (self.ghostAura + 1)))
        
-            self.updateReward(pos, int(self.getReward(pos) + (fraction * self.ghostReward)))
+            self.updateReward(pos, self.getReward(pos) + (fraction * self.ghostReward))
             queue.append(((x - 1, y), distance + 1))
             queue.append(((x + 1, y), distance + 1))
             queue.append(((x, y - 1), distance + 1))
@@ -309,6 +391,7 @@ class MDPAgent(Agent):
                     other_pos = pos 
                 utility += self.grid.getUtility(other_pos) * differentDirectionProb
 
+            
             if utility > best_utility:
                 best_utility = utility
                 best_direction = direction
@@ -377,13 +460,14 @@ class MDPAgent(Agent):
         # do ghosts shadow here to check direction ghosts are moving in
         # pass this into grid - grid should only assign negative reward in the direction the ghost is moving in (ghost doesnt back on itself)
 
-        
+        ghostsStateWithTimer = api.ghostStatesWithTimes(state)
 
-        self.grid = Grid(self.width, self.height, self.walls, self.food, self.capsules, self.ghostsWithLastDirection)
+        self.grid = Grid(self.width, self.height, self.walls, self.food, self.capsules, self.ghostsWithLastDirection, pos, ghostsStateWithTimer)
 
         self.valueIteration(state, sameDirectionProb, differentDirectionProb)
 
         best_direction, _ = self.getBestHelper(state, pos, sameDirectionProb, differentDirectionProb)
+
         return api.makeMove(best_direction, legal)
 
     
@@ -403,13 +487,17 @@ class MDPAgent(Agent):
     def compute_direction(self, prev, current):
         x1, y1 = prev
         x2, y2 = current
-        if x2 == x1 and y2 == y1 + 1:
+        dx = x2 - x1
+        dy = y2 - y1
+        epsilon = 0.1  # Tolerance for floating-point comparisons
+
+        if abs(dx) < epsilon and dy > epsilon:
             return Directions.NORTH
-        elif x2 == x1 and y2 == y1 - 1:
+        elif abs(dx) < epsilon and dy < -epsilon:
             return Directions.SOUTH
-        elif x2 == x1 + 1 and y2 == y1:
+        elif dx > epsilon and abs(dy) < epsilon:
             return Directions.EAST
-        elif x2 == x1 - 1 and y2 == y1:
+        elif dx < -epsilon and abs(dy) < epsilon:
             return Directions.WEST
         else:
             return Directions.STOP
