@@ -37,19 +37,22 @@ import util
 import time
 from collections import deque
 
+""" Class to represent the grid of the game 
 
-#TODO /neutralise ghost reward when edible if pacman can not get there in time remaining
-#TODO GAMES TAKE TOO LONG Pacman avoiding ghosts too much?
+Contains the utility grid and reward grid for the game
+
+Varies the rewards based on a number of rules
+
+"""
+
 class Grid:
-    #Lower ghost negative reward
-    # Ghost check negative reward should only happen in the same direction it is moving
-    def __init__(self, width, height, walls, food, capsules, ghostsWithLastDirection, pacmanPos, ghostStatesWithTimer):
+    def __init__(self, width, height, walls, food, capsules, ghostsWithLastDirection, pacmanPos, ghostStatesWithTimer, ghostSpawnPositions):
         self.width = width
         self.height = height
         self.utility_grid = [[0 for _ in range(width)] for _ in range(height)]
         self.reward_grid = [[-20 for _ in range(width)] for _ in range(height)] 
         self.ghostReward = -250
-        self.foodReward = (-self.ghostReward * 1.5) / float(len(food))
+        self.foodReward = (-self.ghostReward * 0.9) / float(len(food))
         self.capsuleReward = 200
         self.walls = walls
         self.furthestDistance = 0
@@ -61,12 +64,14 @@ class Grid:
         self.highestCapsuleReward = 200
         self.capsules = capsules
         self.edibleGhosts = []
+        self.pacmanPoweredUp = False
+        self.food = food
 
         for ghost in ghostsWithLastDirection:
             self.ghosts.append(ghost['pos'])
 
         for ghost in ghostStatesWithTimer:
-            if ghost[1] > 0.5:
+            if ghost[1] > 1:
                 self.edibleGhosts.append(ghost[0])
         
         
@@ -77,16 +82,14 @@ class Grid:
                 elif (x, y) in walls:
                     self.updateUtility((x, y), '#')      
                     self.updateReward((x, y), '#') 
-                # elif (x, y) in capsules:
-                #     self.updateReward((x, y), self.capsuleReward)
-                # elif (x, y) in ghosts:
-                #     self.reward_grid[self.height - y - 1][x] = self.ghostReward
         
+        # Higher negative rewards for coords with more walls around them
         for x in range(width):
             for y in range(height):
                 if (x, y) not in self.walls:
                     self.updateSquareReward((x, y))
         
+
 
         firstStep = False
         for ghost in ghostsWithLastDirection:
@@ -94,10 +97,8 @@ class Grid:
                 firstStep = True
                 break
         
-
+        # If first step, update rewards for the first time without considering ghosts directions
         if firstStep:
-            # print ghostsWithLastDirection
-
             if ghostsWithLastDirection:
                 if ghostsWithLastDirection:
                     self.firstGetFurthestDistance(ghostsWithLastDirection[0]['pos'])
@@ -105,30 +106,82 @@ class Grid:
                 for ghost in ghostsWithLastDirection:
                     self.firstUpdateNeighboursRewards(ghost['pos'])
         else:
-
+            # If not first step, apply negative rewards based on the direction of the ghosts and distance from ghosts
             if ghostsWithLastDirection:
                 self.getFurthestDistance(ghostsWithLastDirection[0])
 
             for ghost in ghostsWithLastDirection:
-                # print ghost['pos']
-                # print ""
-                if ghost['pos'] in self.edibleGhosts:
-                    self.updateNeighboursRewards(ghost, -1)
+                # If ghost is edible and pacman can get to ghost before timer runs out, apply positive rewards
+                if ghost['pos'] in self.edibleGhosts and self.getDistanceBetween(pacmanPos, ghost['pos']) <= ghost['timer']:
+                    self.pacmanPoweredUp = True
+                    self.updateNeighboursRewards(ghost, -0.3)
+                    self.applyNegativeRewardToGhostSpawn(ghostSpawnPositions)
                 else:
-                    self.updateNeighboursRewards(ghost, 1)
-
-        for x in range(width):
-            for y in range(height):
-                reward = self.getReward((x, y))
-                if reward != '#':
-                    self.updateReward((x, y), int(self.getReward((x, y))))
-    
+                    self.updateNeighboursRewards(ghost, 1)    
 
         self.updateCapsuleRewards()
+        self.addFoodDistanceRewards()
 
+    """ Add rewards to the grid based on the distance from the food to incentivise Pacman to eat food """
+    def addFoodDistanceRewards(self):
+        queue = deque()
+        for food in self.food:
+            queue.append((food, 0))
+        visited = set()
+        while queue:
+            pos, distance = queue.popleft()
+            x, y = pos
+            if pos in visited or pos in self.walls or x < 0 or x >= self.width or y < 0 or y >= self.height:
+                continue
+            visited.add(pos)
+            self.updateReward(pos, self.getReward(pos) + (0.8 * self.foodReward * (1 - (float(distance) / self.furthestDistance))))
+            queue.append(((x - 1, y), distance + 1))
+            queue.append(((x + 1, y), distance + 1))
+            queue.append(((x, y - 1), distance + 1))
+            queue.append(((x, y + 1), distance + 1))
+
+    """ Get the distance between two positions """
+    def getDistanceBetween(self, pos1, pos2):
+        x, y = pos2
+        pos2 = (int(x), int(y))
+        queue = deque([(pos1, 0)])
+        visited = set()
+        while queue:
+            pos, distance = queue.popleft()
+            x, y = pos
+            if pos in visited or pos in self.walls or x < 0 or x >= self.width or y < 0 or y >= self.height:
+                continue
+            visited.add(pos)
+            if pos == pos2:
+                return distance
+            queue.append(((x - 1, y), distance + 1))
+            queue.append(((x + 1, y), distance + 1))
+            queue.append(((x, y - 1), distance + 1))
+            queue.append(((x, y + 1), distance + 1))
         
+        return float('inf')
 
+    """ Apply negative rewards to the spawn positions of the ghosts """
+    def applyNegativeRewardToGhostSpawn(self, ghostSpawnPositions):
+        for ghost in ghostSpawnPositions:
+            x, y = ghost
+            self.updateReward(ghost, self.getReward(ghost) + (10 * self.ghostReward))
+            if (x - 1, y) not in self.walls:
+                self.updateReward((x - 1, y), self.getReward((x - 1, y)) + (10 * self.ghostReward))
+            if (x + 1, y) not in self.walls:
+                self.updateReward((x + 1, y), self.getReward((x + 1, y)) + (10 * self.ghostReward))
+            if (x, y - 1) not in self.walls:
+                self.updateReward((x, y - 1), self.getReward((x, y - 1)) + (10 * self.ghostReward))
+            if (x, y + 1) not in self.walls:
+                self.updateReward((x, y + 1), self.getReward((x, y + 1)) + (10 * self.ghostReward))
+            
+
+    """ Update the rewards for the capsules based on the distance of the ghosts from the pacman """
     def updateCapsuleRewards(self):
+        if self.pacmanPoweredUp:
+            for capsule in self.capsules:
+                self.updateReward(capsule, self.getReward(capsule) + (self.ghostReward * 0.2))
+            return
         queue = deque([(self.pacmanPos, 0)])
         visited = set()
         capsuleReward = 0
@@ -178,9 +231,7 @@ class Grid:
             else:
                 self.updateReward(coord, reward * (5.0/4))
     
-            
-
-
+    """ Get the furthest distance any object can travel from a given position without repeating steps """
     def getFurthestDistance(self, ghost):
         visited = set()
         furthestDistance = 10
@@ -210,6 +261,7 @@ class Grid:
                     
         self.furthestDistance = furthestDistance
 
+    """ The closer a square is to a ghost, the higher the negative reward """
     def updateNeighboursRewards(self, ghost, multiplier):
         x, y = ghost['pos']
         x, y = int(x), int(y)
@@ -258,6 +310,7 @@ class Grid:
                 if next_pos != pos and (next_pos, d) not in visited and next_pos not in self.walls:
                     queue.append((next_pos, d, distance + 1))
     
+    """ Initial furthest distance """
     def firstGetFurthestDistance(self, ghost):
         visited = set()
         furthestDistance = 0
@@ -275,6 +328,7 @@ class Grid:
             initialqueue.append(((x, y + 1), distance + 1))
         self.furthestDistance = furthestDistance
 
+    """ Initial update rewards for the first time without considering the direction of the ghosts """
     def firstUpdateNeighboursRewards(self, ghost):
         x, y = ghost
         x, y = int(x), int(y)
@@ -342,6 +396,7 @@ class MDPAgent(Agent):
         self.walls = None
         self.ghosts = None
         self.ghostsWithLastDirection = []
+        self.ghostsSpawnPositions = []
 
     
     def final(self, state):
@@ -351,6 +406,8 @@ class MDPAgent(Agent):
         self.capsules = None
         self.walls = None
         self.ghosts = None
+        self.ghostsWithLastDirection = []
+        self.ghostsSpawnPositions = []
 
     
     def getWidthHeight(self, state):
@@ -365,7 +422,9 @@ class MDPAgent(Agent):
         self.capsules = set(api.capsules(state))
         self.walls = set(api.walls(state))
         self.initialised = True
+        self.ghostsSpawnPositions = api.ghosts(state)
 
+    """ Get the best direction to move in based on the current position and surrounding utilities"""
     def getBestHelper(self, state, pos, sameDirectionProb, differentDirectionProb):
         best_direction = None
         best_utility = float('-inf')
@@ -398,6 +457,7 @@ class MDPAgent(Agent):
 
         return best_direction, best_utility
     
+    """ Value iteration algorithm """
     def valueIteration(self, state, sameDirectionProb, differentDirectionProb, epsilon=0.01):
         while True:
             delta = 0 
@@ -416,15 +476,13 @@ class MDPAgent(Agent):
                         delta = max(delta, abs(new_grid.getUtility(current_pos) - new_value))
                         new_grid.updateUtility(current_pos, new_value)
 
-
             self.grid = new_grid 
-
 
             if delta < epsilon:
                 break
 
 
-
+    
     def getAction(self, state):
         if not self.initialised:
             self.initialise(state)
@@ -442,27 +500,27 @@ class MDPAgent(Agent):
         if pos in self.capsules:
             self.capsules.remove(pos)
 
-        current_ghosts = api.ghosts(state)
+        current_ghosts = api.ghostStatesWithTimes(state)
 
+        # Gets the ghosts and the direction they are moving in
         if not self.ghosts:
-            self.ghostsWithLastDirection = [{'pos': g, 'dir': Directions.STOP} for g in current_ghosts]
+            self.ghostsWithLastDirection = [{'pos': g[0], 'dir': Directions.STOP, 'timer': g[1]} for g in current_ghosts]
         else:
             for i, g in enumerate(current_ghosts):
                 if i < len(self.ghostsWithLastDirection):
                     prev_g = self.ghostsWithLastDirection[i]['pos']
-                    direction = self.compute_direction(prev_g, g)
-                    self.ghostsWithLastDirection[i]['pos'] = g
+                    direction = self.compute_direction(prev_g, g[0])
+                    self.ghostsWithLastDirection[i]['pos'] = g[0]
                     self.ghostsWithLastDirection[i]['dir'] = direction
+                    self.ghostsWithLastDirection[i]['timer'] = g[1]
                 else:
-                    self.ghostsWithLastDirection.append({'pos': g, 'dir': Directions.STOP})
+                    self.ghostsWithLastDirection.append({'pos': g[0], 'dir': Directions.STOP, 'timer': g[1]})
 
         self.ghosts = current_ghosts
-        # do ghosts shadow here to check direction ghosts are moving in
-        # pass this into grid - grid should only assign negative reward in the direction the ghost is moving in (ghost doesnt back on itself)
-
+        
         ghostsStateWithTimer = api.ghostStatesWithTimes(state)
 
-        self.grid = Grid(self.width, self.height, self.walls, self.food, self.capsules, self.ghostsWithLastDirection, pos, ghostsStateWithTimer)
+        self.grid = Grid(self.width, self.height, self.walls, self.food, self.capsules, self.ghostsWithLastDirection, pos, ghostsStateWithTimer, self.ghostsSpawnPositions)
 
         self.valueIteration(state, sameDirectionProb, differentDirectionProb)
 
@@ -484,12 +542,13 @@ class MDPAgent(Agent):
         else:
             return current_pos
         
+    """ Compute the direction of the ghost """
     def compute_direction(self, prev, current):
         x1, y1 = prev
         x2, y2 = current
         dx = x2 - x1
         dy = y2 - y1
-        epsilon = 0.1  # Tolerance for floating-point comparisons
+        epsilon = 0.1  
 
         if abs(dx) < epsilon and dy > epsilon:
             return Directions.NORTH
